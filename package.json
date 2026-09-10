@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "smoke": "tsx scripts/smoke.ts",
+    "snapshot": "tsx scripts/render-snapshot.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

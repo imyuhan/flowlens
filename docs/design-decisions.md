@@ -196,3 +196,55 @@ estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时)
 - Cloudflare Pages 构建配置：Framework 预设「Next.js (Static HTML Export)」、构建命令 `npm run build`、输出目录 `out`。
 - `out/` 已加入 `.gitignore`（与 `/.next/` 同属构建产物，不入库）。
 - 静态导出的约束：页面必须全部 `"use client"`（`app/page.tsx` 已是）；不可用 `next/image` 远程优化（本项目 Logo 为内联 SVG，无影响）；无动态路由需 `generateStaticParams`。
+
+## 12. 组件可读性重构与渲染快照验证
+
+### 12.1 背景
+
+`components/` 下的 `TaskCard`、`EmptyState`、`ResultSummary` 由 Codex 生成时被压成单行 JSX（`TaskCard.tsx` 整张卡片挤在 1 行、约 4000 字符、约 15 层嵌套），`app/page.tsx:42` 用嵌套三元渲染整个结果区。本次为纯可读性重构：**不改逻辑、不改 Tailwind 类名、不改 DOM 结构**。
+
+### 12.2 重构内容
+
+| 文件 | 做法 |
+|------|------|
+| `components/TaskCard.tsx` | 维度表抽成 `DIMENSIONS` 常量（中文名 / 字段名 / 配色三元组），卡片按「头部 → 标签 → 双栏 → Prompt」分区并加中文注释 |
+| `components/EmptyState.tsx` | 两种空态的文案抽成 `CONTENT` 常量表，按 `kind` 取用 |
+| `components/ResultSummary.tsx` | 新增 `buildItems()` 生成三个统计项，`map` 回调展开 |
+| `components/LoadingState.tsx` | **新增**：从 `page.tsx` 抽出的加载态 |
+| `components/ResultView.tsx` | **新增**：从 `page.tsx` 抽出的结果区（概览条 + 卡片列表），props 为 `summary / tasks / copiedId / onCopy` |
+| `app/page.tsx` | 用 `loading && …` / `!loading && hasTasks && …` / `!loading && !hasTasks && …` 三组互斥条件渲染替掉嵌套三元；`EXAMPLE` 旁新增 `MIN_INPUT_LENGTH` 常量 |
+
+### 12.3 关键实现细节（易踩坑）
+
+- **JSX 中跨行的 `{a} {b}` 会丢掉中间的空格。** 原代码 `{label} {value}` 两个表达式写在同一行，中间那个空格是**字面量**；若换行书写会变成 `{label}{value}`，渲染结果从「重复 62」变成「重复62」。重构维度标签时必须保持这两个表达式同行。
+- **状态分支的互斥性。** 原嵌套三元的 else 分支进入条件是 `result || loading`。改写成并列 `&&` 后必须保证 `loading` / `!loading && hasTasks` / `!loading && !hasTasks` 三者互斥，否则会同时渲染加载态与结果。本例靠 `loading` 与 `!loading` 天然互斥成立。
+- **`TaskCard` 的维度字段名不能直接搬。** 原实现把分值先在组件体内取成数组（`[label, value, cls]`），重构为 `[label, key, cls]` 后渲染时现取 `task.dimensions[key]`——两者渲染结果一致，但类型收窄方式不同，需确认 `key` 在 `DimensionScores` 上可索引。
+
+### 12.4 验证方法（无测试框架下的机械证明）
+
+- `scripts/render-snapshot.tsx`（`npm run snapshot`）用 `react-dom/server` 的 `renderToStaticMarkup` 把组件渲染成静态 HTML 打印到 stdout。
+- 改动前后各跑一次并 `diff`，逐字节一致即可机械地证明渲染结果未变：
+
+  ```bash
+  npm run --silent snapshot > before.html
+  # ... 改代码 ...
+  npm run --silent snapshot > after.html
+  diff before.html after.html
+  ```
+
+  > 必须加 `--silent`：不加的话 npm 会把 4 行执行横幅写进 stdout，污染快照文件。
+
+- 快照覆盖：`ResultSummary`、任务卡片列表、`copied=true` 的卡片、两种空态、4 档分值的 `ScoreBar`，以及引擎输出 JSON（确认没碰到 `lib/`）。
+- `ResultView` 的抽取是否忠实，单独用「`ResultView` 渲染输出 == 基线中 `ResultSummary` + `TaskList` 两段拼接」验证。
+- 验证结果：以上比对**全部逐字节一致**；`npm run typecheck`、`npm run build`、`npm run smoke` 均通过（smoke 的基准仍为 `4 / 59.8 / 14`）。
+- **局限**：快照只覆盖静态渲染。交互行为（点击复制、输入、加载态切换、`copiedId` 回显）不在覆盖范围内，仍需人工确认。
+
+### 12.5 本次未做的事
+
+本次是纯可读性重构，**没有修复任何引擎缺陷**。以下问题仍然存在，留待后续处理：
+
+- 任务 id 跳号（`analyzer.ts:223` 传过滤前的下标，卡片会印出 `TASK 01 / TASK 03`）
+- `summary.totalSegments` 含被跳过的碎片（`analyzer.ts:233`），与 `automatableCount` 口径不一致
+- `estimatedHoursPerWeek` 取最高频率且假设 100% 消除，偏乐观
+- `npm run start` 在 `output: "export"` 下是死脚本
+- `KeywordWeight` 的 `1` 档位从未被任何词使用

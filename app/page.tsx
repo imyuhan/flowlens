@@ -4,11 +4,15 @@ import { useState } from "react";
 import { analyze } from "@/lib/analyzer";
 import type { AnalysisResult } from "@/lib/types";
 import { EmptyState } from "@/components/EmptyState";
-import { ResultSummary } from "@/components/ResultSummary";
-import { TaskCard } from "@/components/TaskCard";
+import { LoadingState } from "@/components/LoadingState";
+import { ResultView } from "@/components/ResultView";
 import { WorkflowInput } from "@/components/WorkflowInput";
 
-const EXAMPLE = "每天整理销售数据，把表格复制粘贴到周报里；每周汇总各个部门的进度，手动核对每个人的完成情况；每当客户提交工单，需要判断是退款还是换货，然后转给对应客服；每月导出财务报表，筛选出异常交易发给财务。";
+/** 「填入示例」按钮的预置文本，与 scripts/smoke.ts 的约定示例一致 */
+const EXAMPLE =
+  "每天整理销售数据，把表格复制粘贴到周报里；每周汇总各个部门的进度，手动核对每个人的完成情况；每当客户提交工单，需要判断是退款还是换货，然后转给对应客服；每月导出财务报表，筛选出异常交易发给财务。";
+
+const MIN_INPUT_LENGTH = 10;
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -18,15 +22,52 @@ export default function Home() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const runAnalysis = () => {
-    if (input.trim().length < 10) { setShortError(true); return; }
-    setShortError(false); setLoading(true);
-    window.setTimeout(() => { setResult(analyze(input)); setLoading(false); }, 320);
+    if (input.trim().length < MIN_INPUT_LENGTH) {
+      setShortError(true);
+      return;
+    }
+    setShortError(false);
+    setLoading(true);
+    window.setTimeout(() => {
+      setResult(analyze(input));
+      setLoading(false);
+    }, 320);
   };
-  const copyPrompt = async (id: string, prompt: string) => { try { await navigator.clipboard.writeText(prompt); setCopiedId(id); window.setTimeout(() => setCopiedId(null), 1500); } catch { /* clipboard may be unavailable */ } };
 
+  const copyPrompt = async (id: string, prompt: string) => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopiedId(id);
+      window.setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      /* 剪贴板不可用（非 HTTPS 或用户拒绝授权）时静默忽略 */
+    }
+  };
+
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    if (shortError) setShortError(false);
+  };
+
+  const handleExample = () => {
+    setInput(EXAMPLE);
+    setShortError(false);
+  };
+
+  // 首屏空态：未分析过且不在加载中，输入区垂直居中
   const idle = !result && !loading;
+  const hasTasks = result !== null && result.tasks.length > 0;
+
   const inputNode = (
-    <WorkflowInput input={input} onChange={(value) => { setInput(value); if (shortError) setShortError(false); }} onExample={() => { setInput(EXAMPLE); setShortError(false); }} onAnalyze={runAnalysis} loading={loading} shortError={shortError} centered={idle} />
+    <WorkflowInput
+      input={input}
+      onChange={handleInputChange}
+      onExample={handleExample}
+      onAnalyze={runAnalysis}
+      loading={loading}
+      shortError={shortError}
+      centered={idle}
+    />
   );
 
   return (
@@ -39,7 +80,16 @@ export default function Home() {
       ) : (
         <>
           {inputNode}
-          {loading ? <div className="mx-auto max-w-4xl px-4 pb-16 pt-28 text-center sm:px-6 sm:pb-20 sm:pt-36"><div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-teal-600" /><p className="mt-4 text-sm text-slate-600">正在梳理你的工作流…</p></div> : result ? result.tasks.length > 0 ? <><ResultSummary summary={result.summary} /><section className="mx-auto max-w-4xl space-y-5 px-4 pb-12 pt-12 sm:px-6 sm:pb-20 sm:pt-14">{result.tasks.map((task) => <TaskCard key={task.id} task={task} copied={copiedId === task.id} onCopy={() => copyPrompt(task.id, task.reusablePrompt)} />)}</section></> : <EmptyState kind="empty" /> : null}
+          {loading && <LoadingState />}
+          {!loading && hasTasks && (
+            <ResultView
+              summary={result.summary}
+              tasks={result.tasks}
+              copiedId={copiedId}
+              onCopy={copyPrompt}
+            />
+          )}
+          {!loading && result !== null && !hasTasks && <EmptyState kind="empty" />}
         </>
       )}
     </main>
