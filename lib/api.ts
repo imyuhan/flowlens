@@ -13,8 +13,13 @@ import type {
   AnalyzeResponse,
 } from "./types";
 
-/** 单次分析的最长等待时间（spec N2） */
-const TIMEOUT_MS = 30_000;
+/**
+ * 单次分析的最长等待时间（spec N2）。
+ *
+ * 必须**大于**服务端的上游超时（55 秒），否则服务端还在等待时客户端已先降级，
+ * 用户看到的会是 `timeout` 而不是真正的失败原因。
+ */
+const TIMEOUT_MS = 65_000;
 
 const ENDPOINT = "/api/analyze";
 

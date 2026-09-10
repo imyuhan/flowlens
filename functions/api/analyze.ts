@@ -31,8 +31,16 @@ const DEFAULT_MODEL = "qwen-plus-2025-07-28";
 /** 输入长度上限（去空白后计），超出直接拒绝、不消耗额度（spec F6） */
 const MAX_INPUT_LENGTH = 2000;
 
-/** 上游请求的超时，须小于客户端的 30 秒，否则客户端先超时、降级原因会失真 */
-const UPSTREAM_TIMEOUT_MS = 25_000;
+/**
+ * 上游请求的超时。
+ *
+ * 必须**小于**客户端超时，否则客户端会先触发降级、`timeout` 原因失真。
+ *
+ * 取值依据：模型需一次性生成全部任务的完整 JSON（每个任务含 SOP 四段、
+ * 多条建议与一段完整 Prompt），输出量随任务数线性增长。实测单个任务约 9 秒，
+ * 多任务输入会显著更久，因此留出充足余量。
+ */
+const UPSTREAM_TIMEOUT_MS = 55_000;
 
 /** 归一化的失败响应 */
 function fail(reason: "too_long" | "model_error" | "invalid_output"): Response {
