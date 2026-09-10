@@ -1,0 +1,3 @@
+export function EmptyState({ kind, compact = false }: { kind: "idle" | "empty"; compact?: boolean }) {
+  return <div className={`mx-auto max-w-4xl px-4 text-center sm:px-6${compact ? " py-4 sm:py-6" : " pb-16 pt-24 sm:pb-20 sm:pt-32"}`}><div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-teal-200 bg-teal-50 text-2xl text-teal-700 shadow-sm">{kind === "idle" ? "✦" : "—"}</div><h2 className="text-xl font-semibold tracking-tight text-slate-900">{kind === "idle" ? "从一段工作描述开始" : "未识别到可自动化任务"}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">{kind === "idle" ? "点击“填入示例”查看一次完整分析，或直接写下你的日常工作。" : "试着描述更具体的频率、手工步骤或判断规则，通常能帮助我们找到更多线索。"}</p></div>;
+}
