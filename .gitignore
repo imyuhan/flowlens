@@ -11,6 +11,8 @@
 # 部署平台本地产物
 .vercel
 .netlify
+# Wrangler 本地缓存与临时 bundle —— 含本地绝对路径，且会随构建变化
+.wrangler
 
 # 测试覆盖率
 /coverage

@@ -1,13 +1,20 @@
 /**
- * 分析引擎冒烟测试
+ * 冒烟测试
  *
- * 直接运行：npx tsx scripts/smoke.ts
- * 验证 spec.md 的 EA1–EA5：示例至少命中一个任务、字段完整、概览正确、
- * 过短/空白/闲聊返回空、按评分降序。任一断言失败则抛出并退出码非 0。
+ * 直接运行：npm run smoke
+ * 覆盖四层：
+ *   [1]-[3] 规则引擎（ch01 既有断言，不得削弱）
+ *   [4]     服务端输出校验与规范化
+ *   [5]     客户端降级决策
+ *   [6]     本地历史存储（含异常路径）
+ * 任一断言失败则退出码非 0。
  */
 
 import { analyze } from "../lib/analyzer";
-import type { TaskAnalysis } from "../lib/types";
+import { resolveOutcome } from "../lib/api";
+import * as history from "../lib/history";
+import { normalizeResult } from "../functions/api/validate";
+import type { AnalysisResult, AnalyzeFailureReason, TaskAnalysis } from "../lib/types";
 
 /** 约定示例（与前端「填入示例」、plan.md 保持一致） */
 const SAMPLE_TEXT =
@@ -33,11 +40,34 @@ function assertTasksValid(tasks: TaskAnalysis[], labelPrefix: string) {
     check(`${p} SOP 四段齐全`, !!t.sop.trigger && t.sop.inputs.length > 0 && t.sop.steps.length > 0 && !!t.sop.output);
     check(`${p} 含可复用 Prompt`, t.reusablePrompt.length > 0);
     check(`${p} 命中关键词非空`, t.matchedKeywords.length > 0);
+    // 契约扩展：规则路径不产出语义判定依据，故为空数组
+    check(`${p} rationale 为数组且规则路径下为空`, Array.isArray(t.rationale) && t.rationale.length === 0);
   });
 }
 
+/** 装一个可控的 localStorage 桩，用于验证历史存储的异常路径 */
+function installFakeStorage() {
+  const map = new Map<string, string>();
+  const stub = {
+    failMode: "none" as "none" | "corrupt" | "throw",
+    getItem(key: string) {
+      if (stub.failMode === "corrupt") return "{{{ 不是合法 JSON";
+      return map.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      if (stub.failMode === "throw") throw new Error("QuotaExceededError");
+      map.set(key, value);
+    },
+    removeItem(key: string) {
+      map.delete(key);
+    },
+  };
+  (globalThis as unknown as { window: unknown }).window = { localStorage: stub };
+  return stub;
+}
+
 function main() {
-  console.log("=== FlowLens 引擎冒烟测试 ===\n");
+  console.log("=== FlowLens 冒烟测试 ===\n");
 
   // EA1/EA2/EA3/EA5 —— 约定示例
   console.log("[1] 约定示例分析");
@@ -94,6 +124,125 @@ function main() {
     `got ${chitchat.tasks.length}`,
   );
   check("闲聊输入不抛异常且返回有效结构", chitchat.summary.totalSegments >= 0);
+
+  // ── [4] 服务端输出校验与规范化 ──
+  // 模型不保证遵守 JSON Schema，这层是硬边界，必须逐类验证
+  console.log("\n[4] 输出校验与规范化（服务端）");
+
+  const clampCase = normalizeResult({
+    tasks: [
+      {
+        title: "越界分数",
+        priorityScore: 999,
+        dimensions: { repetition: 200, timeCost: -5, ruleClarity: 50.6 },
+      },
+    ],
+  });
+  check(
+    "分数越界被 clamp 为 0-100 整数",
+    clampCase?.tasks[0].priorityScore === 100 &&
+      clampCase.tasks[0].dimensions.repetition === 100 &&
+      clampCase.tasks[0].dimensions.timeCost === 0 &&
+      clampCase.tasks[0].dimensions.ruleClarity === 51,
+  );
+
+  const missingSop = normalizeResult({ tasks: [{ title: "缺 SOP", priorityScore: 60 }] });
+  check(
+    "缺 sop 时补默认结构而非丢弃任务",
+    missingSop?.tasks.length === 1 && missingSop.tasks[0].sop.steps.length === 0,
+  );
+
+  const notArray = normalizeResult({ tasks: "abc" });
+  check(
+    "tasks 非数组时返回结构合法的空结果",
+    notArray !== null && notArray.tasks.length === 0 && notArray.summary.automatableCount === 0,
+  );
+
+  check("null 输入返回 null", normalizeResult(null) === null);
+  check("缺 tasks 字段返回 null", normalizeResult({ summary: {} }) === null);
+
+  const unordered = normalizeResult({
+    summary: { totalSegments: 2, automatableCount: 99, averageScore: 0 },
+    tasks: [
+      { title: "低分任务", priorityScore: 30 },
+      { title: "高分任务", priorityScore: 90 },
+    ],
+  });
+  check("重排为优先级降序", unordered?.tasks[0].title === "高分任务");
+  check(
+    "id 按排序后重新生成",
+    unordered?.tasks[0].id === "task-1" && unordered.tasks[1].id === "task-2",
+  );
+  check("automatableCount 以实际任务数为准（忽略模型的 99）", unordered?.summary.automatableCount === 2);
+  check("averageScore 重算为 60", unordered?.summary.averageScore === 60);
+  check("标题为空的任务被丢弃", normalizeResult({ tasks: [{ title: "", priorityScore: 60 }] })?.tasks.length === 0);
+  check(
+    "优先级分非数值的任务被丢弃",
+    normalizeResult({ tasks: [{ title: "x", priorityScore: "不是数字" }] })?.tasks.length === 0,
+  );
+
+  // ── [5] 客户端降级决策 ──
+  console.log("\n[5] 降级决策（客户端）");
+
+  const fakeResult: AnalysisResult = {
+    summary: { totalSegments: 1, automatableCount: 1, averageScore: 60, estimatedHoursPerWeek: 2 },
+    tasks: [],
+  };
+
+  const succeeded = resolveOutcome(SAMPLE_TEXT, { ok: true, result: fakeResult }, analyze);
+  check("接口成功 → 来源为 llm 且无降级原因", succeeded.source === "llm" && succeeded.degradedReason === undefined);
+  check(
+    "接口成功 → 直接采用服务端结果，不跑本地引擎",
+    JSON.stringify(succeeded.result) === JSON.stringify(fakeResult),
+  );
+
+  const reasons: AnalyzeFailureReason[] = ["too_long", "timeout", "model_error", "invalid_output"];
+  reasons.forEach((reason) => {
+    const degraded = resolveOutcome(SAMPLE_TEXT, { ok: false, reason }, analyze);
+    check(
+      `接口失败(${reason}) → 降级为本地规则且结果与引擎一致`,
+      degraded.source === "rules" &&
+        degraded.degradedReason === reason &&
+        JSON.stringify(degraded.result) === JSON.stringify(analyze(SAMPLE_TEXT)),
+    );
+  });
+
+  // ── [6] 本地历史存储 ──
+  console.log("\n[6] 本地历史记录");
+
+  const storage = installFakeStorage();
+  const entry = { result: fakeResult, source: "llm" as const };
+
+  check("存储可用时 isAvailable 为 true", history.isAvailable() === true);
+  check("初始为空", history.load().length === 0);
+
+  const afterSave = history.save("测试输入", entry);
+  check("保存一条后长度为 1", afterSave.length === 1);
+  check("重新读取保留该条", history.load().length === 1);
+  check("删除单条后为空", history.remove(afterSave[0].id).length === 0);
+
+  for (let i = 0; i < 60; i++) history.save(`输入 ${i}`, entry);
+  const capped = history.load();
+  check(
+    `超过 ${history.HISTORY_LIMIT} 条时淘汰最旧、保留最新`,
+    capped.length === history.HISTORY_LIMIT && capped[0].input === "输入 59",
+    `got ${capped.length} 条，首条「${capped[0]?.input}」`,
+  );
+
+  history.clear();
+  check("清空后为空", history.load().length === 0);
+
+  storage.failMode = "corrupt";
+  check("数据损坏时返回空数组而非抛出", history.load().length === 0);
+
+  storage.failMode = "throw";
+  let threw = false;
+  try {
+    history.save("配额写满", entry);
+  } catch {
+    threw = true;
+  }
+  check("写入失败（配额满）时不向外抛出", threw === false);
 
   console.log("\n=== 结果 ===");
   if (failures === 0) {

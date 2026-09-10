@@ -16,8 +16,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { analyze } from "../lib/analyzer";
 import { EmptyState } from "../components/EmptyState";
+import { HistoryPanel } from "../components/HistoryPanel";
 import { ResultSummary } from "../components/ResultSummary";
 import { ScoreBar } from "../components/ScoreBar";
+import { SourceBadge } from "../components/SourceBadge";
 import { TaskCard } from "../components/TaskCard";
 
 // 与 app/page.tsx 的 EXAMPLE 保持一致
@@ -60,6 +62,56 @@ sections.push(renderSection("EmptyState-empty", renderToStaticMarkup(<EmptyState
 for (const score of [0, 25, 62, 100]) {
   sections.push(renderSection(`ScoreBar-${score}`, renderToStaticMarkup(<ScoreBar score={score} />)));
 }
+
+// ch02：来源标注（两种来源）
+sections.push(renderSection("SourceBadge-llm", renderToStaticMarkup(<SourceBadge source="llm" />)));
+sections.push(
+  renderSection(
+    "SourceBadge-rules",
+    renderToStaticMarkup(<SourceBadge source="rules" degradedReason="model_error" />),
+  ),
+);
+
+// ch02：带判定依据的任务卡片（LLM 路径）
+const llmTask = { ...result.tasks[0], rationale: ["每日重复触发", "需手工整理数据"] };
+sections.push(
+  renderSection("TaskCard-withRationale", renderToStaticMarkup(<TaskCard task={llmTask} copied={false} onCopy={noop} />)),
+);
+
+// ch02：历史面板三态
+const historyEntries = [
+  {
+    id: "h1",
+    createdAt: new Date("2026-09-10T14:32:00").getTime(),
+    input: EXAMPLE,
+    outcome: { result, source: "llm" as const },
+  },
+  {
+    id: "h2",
+    createdAt: new Date("2026-09-10T11:05:00").getTime(),
+    input: "每周汇总各个部门的进度，手动核对每个人的完成情况",
+    outcome: { result, source: "rules" as const, degradedReason: "model_error" as const },
+  },
+];
+const panelProps = { onClose: noop, onSelect: noop, onRemove: noop, onClear: noop };
+sections.push(
+  renderSection(
+    "HistoryPanel-open",
+    renderToStaticMarkup(<HistoryPanel entries={historyEntries} open available {...panelProps} />),
+  ),
+);
+sections.push(
+  renderSection(
+    "HistoryPanel-empty",
+    renderToStaticMarkup(<HistoryPanel entries={[]} open available {...panelProps} />),
+  ),
+);
+sections.push(
+  renderSection(
+    "HistoryPanel-unavailable",
+    renderToStaticMarkup(<HistoryPanel entries={[]} open available={false} {...panelProps} />),
+  ),
+);
 
 // 引擎输出一并快照：确认重构没碰到 lib/
 sections.push(renderSection("EngineOutput", JSON.stringify(result, null, 2)));

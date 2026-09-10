@@ -197,6 +197,169 @@ estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时)
 - `out/` 已加入 `.gitignore`（与 `/.next/` 同属构建产物，不入库）。
 - 静态导出的约束：页面必须全部 `"use client"`（`app/page.tsx` 已是）；不可用 `next/image` 远程优化（本项目 Logo 为内联 SVG，无影响）；无动态路由需 `generateStaticParams`。
 
+---
+
+# ch02：LLM 主路径 + 客户端规则兜底
+
+> 四份规格文档见 `docs/ch02/01/`。以下记录实现层面的具体决策与细节。
+
+## 12. 架构
+
+### 12.1 三层结构
+
+```
+浏览器（Next.js 静态导出）
+  ├─ app/page.tsx        状态容器（header + 分析流程 + 历史）
+  ├─ lib/api.ts          调用 /api/analyze + 30s 超时 + 降级决策
+  ├─ lib/history.ts      localStorage 历史读写
+  ├─ lib/analyzer.ts     规则引擎（兜底层，ch01 原样）
+  └─ components/*        UI
+          │  POST /api/analyze { text }
+          ▼
+Cloudflare Pages Function（functions/api/）
+  ├─ analyze.ts    输入校验 → env.AI.run → 输出校验
+  ├─ prompt.ts     SYSTEM_PROMPT + RESULT_SCHEMA
+  └─ validate.ts   normalizeResult：校验 + 修正
+          │
+          ▼
+Workers AI（env.AI 运行时绑定）
+```
+
+### 12.2 关键决策：规则兜底放在**客户端**，不放服务端
+
+| | 服务端兜底 | **客户端兜底（实际选择）** |
+|---|---|---|
+| 代码成本 | 需把 `lib/` 打包进 Function | 零 —— `analyzer.ts` 本就在前端 bundle 内 |
+| 服务端不可达时 | ❌ 完全失效 | ✅ 仍然兜得住 |
+| 本地 `npm run dev` | 需另起 wrangler 才有结果 | ✅ 接口 404 → 自动降级，开发体验与 ch01 一致 |
+| 服务端复杂度 | 调模型 + 兜底两套逻辑 | 只做「调模型 + 校验」 |
+
+判断依据：**兜底层不该和它要保护的东西放在同一层**。服务端一挂，服务端兜底也跟着挂。
+
+可行性来自一个已确认的事实：`lib/` 内部全部使用相对路径导入（`./types`、`./rules`、`./templates`），未使用 `@/` 别名 —— 因此它既可被 wrangler 打包、也可留在客户端。本方案选择后者。
+
+### 12.3 Workers AI 绑定：整个项目零 API key
+
+- 调用形态：`env.AI.run(MODEL, { messages, response_format })`，凭证由 Cloudflare 在运行时注入。
+- **仓库、客户端产物、网络响应中都不存在任何密钥**（已验证，见 §13.4）。
+- 生产：在 Cloudflare dashboard 为 Pages 项目配置名为 `AI` 的 Workers AI binding。
+- 本地：`npx wrangler pages dev out --ai=AI`（官方支持，且优先于配置文件），已封装为 `npm run dev:full`。
+- 免费额度：10,000 neurons/天（账户级，UTC 0 点重置），Free 计划超额直接报错、**不会产生账单**。
+
+### 12.4 JSON Mode 与校验策略
+
+- 使用 Workers AI 的 JSON Mode：`response_format: { type: "json_schema", json_schema: { name, schema } }`。
+- **官方明确不保证模型遵守 schema**，且已知有「通过 Worker binding 传 json_schema 可能失败」的报告（REST API 可用）。因此 `normalizeResult` 是硬边界，不可省略。
+- `validate.ts` 的修正规则（具体数值）：
+
+| 处理项 | 规则 |
+|--------|------|
+| 分数 | clamp 到 0–100 并取整；非数值则丢弃该任务 |
+| 字符串数组 | 去空、去重、最多 6 项（SOP 步骤最多 8 项） |
+| 字符串长度 | 常规 400 字、标题 40 字、SOP 触发/输出 160 字、Prompt 1500 字 |
+| 任务保留条件 | 标题非空 **且** priorityScore 可解析为数值，否则丢弃该任务 |
+| id | **忽略模型给的 id**，按降序重排后重新生成为 `task-{n}` |
+| summary | `automatableCount` / `averageScore` 一律按实际 tasks 重算，不采信模型 |
+| 每周工时 | clamp 到 0–200 |
+| 顶层判定 | 非对象或无 `tasks` 字段 → 返回 `null`（触发降级）；`tasks` 非数组 → 返回结构合法的空结果 |
+
+### 12.5 数据契约扩展
+
+`AnalysisResult` 增量扩展、不破坏 ch01 字段；`source` 不进契约以避免污染：
+
+- `TaskAnalysis` 新增 `rationale: string[]` —— LLM 路径为语义判定依据，**规则路径固定为空数组**（`analyzer.ts` 只加了一行 `rationale: []`，逻辑零改动），页面据此回退到 `matchedKeywords` 关键词标签。
+- 新增 `AnalysisSource`、`AnalysisOutcome`、`HistoryEntry`、`AnalyzeFailureReason`、`AnalyzeResponse`。
+- 选择理由：`rationale` 用数组而非字符串，是为了和 `matchedKeywords` 一样按标签渲染，视觉上与 ch01 一致，但标签内容从 `#每天` 变成 `#每日重复触发` —— 语义提升直接可见。
+
+### 12.6 降级决策抽成纯函数
+
+`lib/api.ts` 的 `resolveOutcome(text, response, localAnalyze)` 把「接口响应 → 分析产出」的决策逻辑从组件里抽出。
+
+原因：降级是本轮最需要被验证的行为，埋在 `page.tsx` 里就无法直接测试。抽出后 smoke 测试可以覆盖全部四种失败原因（见 §13.2）。
+
+### 12.7 历史记录存储
+
+- 单 key（`flowlens:history`）存 JSON 数组，最新在前，上限 50 条（超出截断尾部）。
+- 所有操作包 try/catch：无 `window`（SSR）、隐私模式、配额写满、数据损坏都退化为「历史不可用」，**绝不抛出**（spec N11）。
+- 数据损坏时丢弃并重建 key，避免之后每次读取都失败。
+- 损坏条目在读取时被过滤，并把清理后的版本写回。
+- `id` 用 `crypto.randomUUID()`，不可用时回退到时间戳 + 随机串。
+- **历史条目存的是完整结果快照**（不只是输入），因此点击历史不消耗 LLM 额度，且结果与当时一致（不受 LLM 非确定性影响）。
+
+### 12.8 header 从 layout 迁入 page
+
+历史入口按钮需要交互，而历史状态属于 `page.tsx`。放进同一组件即可直接共享状态，无需 Context 或状态提升。项目为单页应用，header 放在 layout 并无实际收益。
+
+`layout.tsx` 现在只保留 `<html>` / `<body>` / metadata。
+
+### 12.9 移除 ch01 的假加载延时
+
+ch01 用 `window.setTimeout(..., 320)` 模拟加载态（当时分析是同步瞬时的）。真异步后若保留，会在真实耗时上**叠加** 320ms，故删除（spec 的 checklist 有对应项）。
+
+复制按钮的 1.5 秒回显 `setTimeout` 保留 —— 那是 UI 反馈，不是假加载。
+
+## 13. 验证方式与实测结果
+
+### 13.1 测试策略
+
+项目无测试框架。采用三条路径：
+
+1. **`npm run smoke`** —— 扩展为四层，61 条断言：
+   - `[1]-[3]` 规则引擎（ch01 既有断言，**一条未删**）
+   - `[4]` 服务端输出校验与规范化（11 条）
+   - `[5]` 客户端降级决策（6 条）
+   - `[6]` 本地历史存储含异常路径（9 条）
+   历史测试用可控的 `localStorage` 桩（`installFakeStorage`），覆盖 corrupt / throw 两种故障模式。
+2. **`npm run snapshot`** —— 16 个区块的渲染快照，用于重构前后逐字节对比。
+3. **临时探针脚本** —— 每个任务实现时用 `tsx` 内联脚本验证，随后固化为上述持久测试或删除。
+
+### 13.2 关键验证证据
+
+| 项 | 证据 |
+|---|---|
+| Function 在真实运行时可用 | `wrangler pages dev` 启动后 curl：超长→`too_long`、空白→`model_error`、AI 未绑定→`model_error`（不崩溃）、静态页 200 |
+| 超长输入不耗额度 | 直接调 handler 并断言 mock 的 `AI.run` **调用次数为 0** |
+| 类型检查确实覆盖 functions/ | 放入故意报错的探针文件 → 退出码 2 且指向该文件；移除后回到 0 |
+| 页面渲染未被破坏 | T11 改动前后 snapshot 逐字节 diff 无差异 |
+| 规则引擎行为未变 | smoke 的 ch01 断言全部保留且通过；`EngineOutput` 区块仍为 4 任务 / 59.8 分 / 14 小时 |
+
+### 13.3 端到端联调的**未完成部分**（如实记录）
+
+以下三项因需要 Cloudflare 登录（浏览器授权）而**未验证**，经用户决定跳过：
+
+- 模型选型实测（候选：Llama 3.3 70B / Llama 4 Scout / Qwen 系）—— `functions/api/analyze.ts` 的 `MODEL` 常量当前为初值 `@cf/meta/llama-3.3-70b-instruct-fp8-fast`，**未经实测确认**。
+- JSON Mode 的 `json_schema` 形式在 binding 路径下是否生效 —— 若不生效，需退为 `json_object` + prompt 强约束。
+- spec EA1 的语义识别对照（同义改写输入 vs 规则引擎漏判）—— 这是本轮最核心的价值主张，**尚未取得实测证据**。
+
+### 13.4 凭据检查（含阳性对照）
+
+- git 全部历史（307,873 字节）中无硬编码凭据。
+- 源码、`out/` 客户端产物中均无 key 模式。
+- **做了阳性对照**：用同一正则在伪造的 key 上验证能抓到，确认「未发现」不是正则失效导致的假阴性。
+
+## 14. 遇到的问题与教训
+
+### 14.1 管道退出码陷阱（本轮踩了两次）
+
+- 第一次：`npm run typecheck | tail -8; echo $?` —— `$?` 是 `tail` 的退出码（恒为 0），掩盖了真实的失败。
+- 第二次：`grep ... | head -5 && echo "⚠️ 有命中"` —— 管道退出码是 `head` 的（恒为 0），导致 `&&` 分支永远执行，**把「零命中」误报成「发现凭据」**，差点得出完全相反的结论。
+
+**教训**：用管道后不能依赖 `$?` 或 `&&`/`||` 判断前一个命令的成败。改为先重定向到文件、再对文件执行 `grep`，或使用 `PIPESTATUS`。
+
+### 14.2 免费额度的数据时效性
+
+最初查到的「Gemini 免费层约 1500 请求/天」是**错误**的：更精确的实测数据显示 Gemini 3.x Flash 免费档只有 **20 请求/天**，Groq 的「1000 请求/天」也受 TPD 限制（70B 模型仅约 50 次/天）。
+
+这直接改变了 provider 选型，最终选了**零 API key、零账单**的 Cloudflare Workers AI。
+
+**教训**：免费额度政策变动频繁且第三方文章互相矛盾，必须交叉验证；架构上则要避免依赖某一家额度 —— 这正是「规则兜底」存在的意义。
+
+### 14.3 并行会话共用工作目录
+
+开发期间另一个会话在本仓库提交代码，导致：它的提交落到我创建的分支上、分支被重命名、我的提交落到新分支而非 main（见 git reflog）。
+
+**教训**：两个会话共用一个工作目录做 git 操作会互相干扰，提交可能落到对方的分支上。
+
 ## 12. 组件可读性重构与渲染快照验证
 
 ### 12.1 背景
