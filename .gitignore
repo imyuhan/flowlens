@@ -14,6 +14,11 @@
 # Wrangler 本地缓存与临时 bundle —— 含本地绝对路径，且会随构建变化
 .wrangler
 
+# Archify 图表产物与校验证据 —— 全部可再生，源文件是 docs/diagrams/*.json
+# （README 引用的 flowlens-architecture.png 是文档图，不在此列，需正常提交）
+/docs/diagrams/*.html
+/docs/diagrams/*.visual-check.*
+
 # 测试覆盖率
 /coverage
 

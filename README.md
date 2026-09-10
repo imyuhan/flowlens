@@ -28,6 +28,14 @@ For each automatable task, FlowLens outputs:
 
 The two paths are labelled in the UI: **AI 分析** (model) vs **本地规则分析** (fallback).
 
+## Architecture
+
+![FlowLens architecture: the browser calls a Cloudflare Pages Function, which calls Alibaba Cloud Model Studio; when that path fails, the in-page rule engine takes over](docs/diagrams/flowlens-architecture.png)
+
+The two dashed branches are the parts that matter. Completed analyses are snapshotted into `localStorage`, and any failure on the model path degrades to the rule engine — which is bundled into the page itself, so it keeps working even when the server is entirely unreachable.
+
+*Diagram source: [`docs/diagrams/flowlens-architecture.json`](docs/diagrams/flowlens-architecture.json). Labels are in Chinese, matching the app's UI.*
+
 ## Tech stack
 
 - **Next.js 16** (App Router, static export)
