@@ -178,6 +178,8 @@ function analyzeSegment(text: string, index: number): TaskAnalysis | null {
     priorityScore,
     dimensions,
     matchedKeywords,
+    // 规则路径不产出语义判定依据，页面回退到 matchedKeywords 标签
+    rationale: [],
     automationSuggestions: buildAutomationSuggestions(dimensions, matchedKeywords),
     sop: buildSop(text, dimensions, matchedKeywords),
     reusablePrompt: buildPrompt(text, dimensions, matchedKeywords),

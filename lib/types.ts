@@ -39,8 +39,10 @@ export interface TaskAnalysis {
   priorityScore: number;
   /** 三维度得分 */
   dimensions: DimensionScores;
-  /** 命中的关键词（去重） */
+  /** 命中的关键词（去重）；规则路径下即为该任务的判定依据 */
   matchedKeywords: string[];
+  /** 判定依据：LLM 路径为语义理由；规则路径为空数组，页面回退到 matchedKeywords 标签 */
+  rationale: string[];
   /** 自动化建议列表 */
   automationSuggestions: string[];
   /** 标准作业流程 */
@@ -67,3 +69,33 @@ export interface AnalysisResult {
   /** 已按 priorityScore 降序排列 */
   tasks: TaskAnalysis[];
 }
+
+/** 分析结果来源：llm = 云端模型分析；rules = 本地规则引擎降级 */
+export type AnalysisSource = "llm" | "rules";
+
+/** 一次分析的完整产出：结果 + 来源标注 */
+export interface AnalysisOutcome {
+  result: AnalysisResult;
+  source: AnalysisSource;
+  /** 降级原因，仅因失败降级时存在 */
+  degradedReason?: AnalyzeFailureReason;
+}
+
+/** 一条历史记录（仅存于浏览器本地，不上传服务端） */
+export interface HistoryEntry {
+  id: string;
+  /** 创建时间，epoch 毫秒 */
+  createdAt: number;
+  /** 用户当时的输入原文 */
+  input: string;
+  /** 当时那份完整结果快照 */
+  outcome: AnalysisOutcome;
+}
+
+/** 分析失败原因 */
+export type AnalyzeFailureReason = "too_long" | "timeout" | "model_error" | "invalid_output";
+
+/** POST /api/analyze 的响应体 */
+export type AnalyzeResponse =
+  | { ok: true; result: AnalysisResult }
+  | { ok: false; reason: AnalyzeFailureReason };

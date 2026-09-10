@@ -30,6 +30,23 @@ export function TaskCard({ task, copied, onCopy }: Props) {
         </div>
       </div>
 
+      {/* 判定依据：LLM 路径产出语义理由；规则路径为空数组，此时仅显示下方关键词标签 */}
+      {task.rationale.length > 0 && (
+        <div className="mt-6">
+          <p className="text-xs font-medium text-slate-500">判定依据</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {task.rationale.map((item) => (
+              <span
+                key={item}
+                className="break-words rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 ring-1 ring-teal-100"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 命中标签：三维度得分 + 命中的关键词 */}
       <div className="mt-6 flex flex-wrap gap-2">
         {DIMENSIONS.filter(([, key]) => task.dimensions[key] > 0).map(([label, key, color]) => (
