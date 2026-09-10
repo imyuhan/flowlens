@@ -360,6 +360,72 @@ ch01 用 `window.setTimeout(..., 320)` 模拟加载态（当时分析是同步�
 
 **教训**：两个会话共用一个工作目录做 git 操作会互相干扰，提交可能落到对方的分支上。
 
+---
+
+# ch02 二次变更：provider 由 Workers AI 改为阿里云百炼
+
+## 15. 变更原因与影响
+
+原方案用 Cloudflare Workers AI（`env.AI` 运行时绑定，零 API key），但**该路径未能调通**。改为通过 **OpenAI 兼容协议**调用阿里云百炼。
+
+| 项 | 变更前 | 变更后 |
+|---|---|---|
+| 凭证 | 无（运行时绑定注入） | `OPENAI_API_KEY` 环境变量 |
+| 结构化输出 | `json_schema`（严格约束） | `json_object`（**只保证语法合法**） |
+| 调用方式 | `env.AI.run(model, inputs)` | `fetch {base}/chat/completions` |
+| 客户端、降级策略、数据契约、历史记录 | — | **全部不变** |
+
+这次变更只动服务端两个文件（`analyze.ts`、`prompt.ts`）与部署配置，验证了「规则兜底在客户端」这个决策的韧性：provider 换掉，兜底层一行没改。
+
+## 15.1 关键实现细节
+
+**改为环境变量驱动**：`OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` 三项覆盖即可切换到任意 OpenAI 兼容服务（DeepSeek、硅基流动、Kimi 等），**换服务商无需改代码**。
+
+默认值：
+
+| 常量 | 值 | 说明 |
+|---|---|---|
+| `DEFAULT_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼北京站 |
+| `DEFAULT_MODEL` | `qwen-plus-2025-07-28` | 由使用方指定 |
+| `MAX_INPUT_LENGTH` | 2000 | 不变，在调用上游之前拦截 |
+| `UPSTREAM_TIMEOUT_MS` | 25000 | **必须小于客户端 30s**，否则客户端先降级、`timeout` 原因会失真 |
+
+**`prompt.ts` 的改动**：删除了 `RESULT_SCHEMA` 对象（该服务不接受它），改为把期望结构以示例形式（`RESULT_SHAPE`）**写进 prompt 文本**。这是 `json_object` 模式的无奈之处——模型看不到 schema，只能靠 prompt 描述。
+
+**该服务的两条硬约束**（已写进代码注释，避免以后误删）：
+
+1. 启用 `json_object` 时，**prompt 中必须出现「JSON」字样**，否则接口直接报错。
+2. **思考模式下不支持结构化输出** —— 若换用 qwen3 等思考模型，必须显式关闭 thinking。
+
+**错误分类策略**：
+
+| 情形 | 归一为 |
+|---|---|
+| 未配置 key（且不发起上游请求） | `model_error` |
+| 上游非 2xx、网络异常、请求体解析失败 | `model_error` |
+| 上游返回非 JSON、结构无法修复 | `invalid_output` |
+| 输入超长（且不发起上游请求） | `too_long` |
+
+服务端用 `console.error` 记录状态码等排查信息，但**不返回给客户端**（spec N8）。
+
+## 15.2 密钥防泄漏
+
+- `.gitignore` 新增 `.dev.vars` 与 `.dev.vars.*`，并用 `!.dev.vars.example` 放行模板。
+- 仓库只提交不含真实值的 `.dev.vars.example`。
+- 判据用 `git status --untracked-files=all`：`.dev.vars` 不出现、`.dev.vars.example` 出现。
+
+> **踩坑（本轮第三次同类问题）**：`git check-ignore` 对**否定规则**同样返回退出码 0，输出行首带 `!` 才表示「该规则排除了它」。拿退出码当判据会得出与事实相反的结论。判断是否被忽略应看 `git status`。
+
+## 15.3 本次验证（mock 上游，无需真 key）
+
+替换 `globalThis.fetch` 注入 mock，覆盖 19 项断言：
+
+- **请求形态**：URL 拼接、`Authorization: Bearer`、`model` 取值、`response_format.type === "json_object"`、`stream === false`、system prompt 含 "JSON"
+- **默认值**：不提供环境变量时确实指向百炼北京端点
+- **异常路径**：缺 key、超长输入（两者均断言**未发起上游请求**）、上游 401、模型输出非 JSON、网络异常 —— 全部正确归一且不抛出
+
+**真 key 的端到端验证仍待进行**（与 §13.3 未完成项同类）。
+
 ## 12. 组件可读性重构与渲染快照验证
 
 ### 12.1 背景

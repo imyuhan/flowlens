@@ -19,11 +19,11 @@
 Cloudflare Pages Function（functions/api/analyze.ts）
   ├─ 输入长度校验（>2000 字直接拒绝，不消耗额度）
   ├─ 构造 prompt
-  ├─ env.AI.run(...)     Workers AI
-  └─ 运行时校验 + 规范化 LLM 输出
+  ├─ fetch {OPENAI_BASE_URL}/chat/completions
+  └─ 运行时校验 + 规范化模型输出
           │
           ▼
-Workers AI（Llama / Qwen）
+阿里云百炼（OpenAI 兼容协议，默认 qwen-plus-2025-07-28）
 ```
 
 ### 关键决策：规则兜底放在客户端，不放服务端
@@ -83,7 +83,7 @@ export type AnalyzeResponse =
 
 **职责：** 接收文本 → 长度校验 → 调 Workers AI → 校验输出 → 返回结构化响应
 **对外接口：** `POST /api/analyze`，请求体 `{ text: string }`，响应 `AnalyzeResponse`
-**依赖：** `./prompt`、`./validate`、`env.AI`（Workers AI binding）
+**依赖：** `./prompt`、`./validate`、环境变量（`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）
 
 - 导出 `onRequestPost: PagesFunction<Env>`，`Env` 含 `AI: Ai`
 - 非 POST 方法由 Pages 自动 405
@@ -93,9 +93,11 @@ export type AnalyzeResponse =
 
 ### functions/api/prompt.ts
 
-**职责：** 定义 System prompt 与输出 JSON Schema
-**对外接口：** `SYSTEM_PROMPT: string`、`RESULT_SCHEMA: object`
+**职责：** 定义 System prompt（内嵌输出结构说明）
+**对外接口：** `SYSTEM_PROMPT: string`
 **依赖：** 无
+
+所选服务只支持 `json_object`（**不支持 `json_schema`**），模型看不到 schema，因此**完整的结构说明必须以文本形式写进 prompt**。另有两条该接口的硬性约束：prompt 中必须出现「JSON」字样，否则接口直接报错；思考模式下不支持结构化输出。
 
 prompt 须明确约定：全中文输出；三维度各自的口径（重复性 / 耗时性 / 规则明确度）；`priorityScore` 为 0–100 且由三维度加权而来；SOP 四段（触发 / 输入 / 步骤 / 输出）齐全；`rationale` 给出短语形式的判定依据而非罗列关键词。Schema 与 `lib/types.ts` 的 `AnalysisResult` 结构一一对应。
 
@@ -247,14 +249,15 @@ FlowLens/
 |---|---|---|
 | 规则兜底位置 | 客户端 | analyzer 本就在 bundle 内；服务端不可达时也能兜住 |
 | 服务端职责 | 只调 LLM + 校验 | 代码最简，不打包规则引擎 |
-| 结构化输出 | Workers AI JSON Mode | OpenAI 兼容（`response_format`）。**须实测 binding 路径是否支持 `json_schema`**（有报告称仅 REST API 可用），不支持则退为 `json_object` + prompt 强约束 |
+| 结构化输出 | `response_format: { type: "json_object" }` | 阿里云百炼的 OpenAI 兼容模式**不支持 `json_schema`** 严格模式，只支持 `json_object`（保证 JSON 语法合法、**不保证结构**）。结构约束因此由 prompt 描述 + `normalizeResult` 运行时校验共同保证 |
 | 输出校验 | 手写校验 + 规范化 | 除校验还需修正（clamp 分数、裁剪数组、重排、重生成 id）；避免引入 zod 依赖 |
-| 超时 | 客户端 `AbortController` 30s | 客户端超时更可靠；Workers 执行时长限制不适用于等待推理 |
+| 超时 | 客户端 30s + 服务端上游 25s | 服务端超时必须**小于**客户端，否则客户端先触发降级、`timeout` 原因会失真 |
 | 历史存储 | localStorage 单 key JSON 数组 | 无后端；50 条上限下体积可忽略 |
 | 来源标注 | 包进 `AnalysisOutcome` | 不污染 ch01 契约 |
 | 加载态 | **删除** ch01 的 `setTimeout(320)` | 真异步后假加载会叠加延迟 |
 | 输入上限 | 前后端各校验一次 | 前端省无谓请求，后端防绕过 |
-| 模型选型 | 实现时实测定稿 | 候选 Llama 3.3 70B / Llama 4 Scout / Qwen3，按中文质量与 JSON 合规率定 |
+| 模型选型 | `qwen-plus-2025-07-28` | 由使用方指定；可用 `OPENAI_MODEL` 环境变量覆盖，换模型无需改代码 |
+| 服务商切换 | 全部走环境变量 | `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` 三项即可切到任何 OpenAI 兼容服务 |
 | Functions 类型 | 独立 `functions/tsconfig.json` | workers-types 与根 tsconfig 的 `dom` lib 存在类型冲突（`Request`/`Response` 等全局类型重定义） |
 
 ## spec 覆盖自检

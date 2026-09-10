@@ -1,0 +1,15 @@
+# 本地开发用的环境变量模板
+#
+# 用法：复制本文件为 .dev.vars 并填入真实值。
+# `.dev.vars` 已被 .gitignore 忽略，**不会**进入仓库；本模板不含任何真实密钥，可以提交。
+#
+# wrangler pages dev 会自动读取项目根目录的 .dev.vars。
+
+# 必填：模型服务的 API key（阿里云百炼控制台获取）
+OPENAI_API_KEY=sk-你的key
+
+# 可选：以下三项都有默认值，不填即使用默认
+# OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# OPENAI_MODEL=qwen-plus-2025-07-28
+
+# 部署到 Cloudflare Pages 时，改为在项目设置的 Environment variables 里配置同样三项。

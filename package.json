@@ -10,7 +10,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "snapshot": "tsx scripts/render-snapshot.tsx",
     "typecheck": "tsc --noEmit && tsc --noEmit -p functions",
-    "dev:full": "next build && npx wrangler pages dev out --ai=AI"
+    "dev:full": "next build && npx wrangler pages dev out"
   },
   "dependencies": {
     "next": "16.3.4",

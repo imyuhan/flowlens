@@ -21,8 +21,11 @@
 ### 启动方式
 
 ```bash
-npm run dev:full     # 全栈本地（需 Cloudflare 账号 + 名为 AI 的 Workers AI binding）
+cp .dev.vars.example .dev.vars   # 填入你的 OPENAI_API_KEY（阿里云百炼控制台获取）
+npm run dev:full                 # 构建并启动本地服务器
 ```
+
+`.dev.vars` 已被 git 忽略，密钥不会入库。
 
 只跑 `npm run dev` 时接口不存在，页面会自动降级——可用于验证降级路径，但**不能**用于本组用例。
 
