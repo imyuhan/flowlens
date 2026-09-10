@@ -188,3 +188,11 @@ estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时)
 概览预期：`totalSegments = 4`、`automatableCount = 4`、`averageScore = 59.8`、`estimatedHoursPerWeek = 14`。
 
 > 此基准由 `npm run smoke` 断言，改动引擎实现后必须重跑验证。
+
+## 11. 静态导出与部署（Cloudflare Pages）
+
+- FlowLens 纯前端、无后端 / API Route / SSR，故采用 Next.js **静态导出**：`next.config.ts` 设 `output: "export"`，`npm run build` 生成 `out/` 目录（`index.html` / `404.html` / `_next/` 静态资源 / `icon.svg`）。
+- 托管平台选 **Cloudflare Pages**（原因：Vercel 注册依赖 Google reCAPTCHA，国内不可用；Cloudflare 用自家 Turnstile 验证，且 `.pages.dev` 国内访问更稳）。
+- Cloudflare Pages 构建配置：Framework 预设「Next.js (Static HTML Export)」、构建命令 `npm run build`、输出目录 `out`。
+- `out/` 已加入 `.gitignore`（与 `/.next/` 同属构建产物，不入库）。
+- 静态导出的约束：页面必须全部 `"use client"`（`app/page.tsx` 已是）；不可用 `next/image` 远程优化（本项目 Logo 为内联 SVG，无影响）；无动态路由需 `generateStaticParams`。
