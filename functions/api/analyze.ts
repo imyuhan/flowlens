@@ -96,8 +96,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     }
 
     if (!upstream.ok) {
-      // 记录状态码便于排查，但不把上游原始报错透给客户端（spec N8）
-      console.error("模型服务返回非 2xx：", upstream.status);
+      // 读取响应详情**仅用于服务端排查**，不透给客户端（spec N8）
+      const detail = await upstream.text().catch(() => "");
+      console.error("模型服务返回非 2xx：", upstream.status, detail.slice(0, 300));
       return fail("model_error");
     }
 
@@ -118,7 +119,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return Response.json({ ok: true, result });
   } catch (error) {
     // 网络异常、abort、请求体解析失败等一律归一
-    console.error("调用模型服务失败：", error instanceof Error ? error.message : "未知错误");
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error("调用模型服务失败：", detail);
     return fail("model_error");
   }
 };
