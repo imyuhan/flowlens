@@ -20,19 +20,23 @@ const FREQUENCY_MAP: Record<string, number> = {
   每次: 3,
 };
 
+/** 一个频率词都没命中时的默认频率（次/周） */
+const DEFAULT_WEEKLY_FREQUENCY = 1;
+
 /**
  * 从命中关键词推断每周发生频率。
- * 命中多个频率词时取最高频率（更保守的估算），无命中默认 1 次/周。
+ * 命中多个频率词时取最高频率；一个都没命中时默认 1 次/周。
+ *
+ * 注意：默认值只能在「无命中」时兜底，**不能拿来当比较的初值** ——
+ * 否则 每月(0.25) / 每季度(0.08) / 每年(0.02) 这些低于 1 的条目
+ * 永远抬不过初值 1，等于在映射表里形同虚设。
  */
 export function detectWeeklyFrequency(keywords: string[]): number {
-  let freq = 1;
-  for (const kw of keywords) {
-    const mapped = FREQUENCY_MAP[kw];
-    if (mapped !== undefined && mapped > freq) {
-      freq = mapped;
-    }
-  }
-  return freq;
+  const frequencies = keywords
+    .map((kw) => FREQUENCY_MAP[kw])
+    .filter((freq): freq is number => freq !== undefined);
+
+  return frequencies.length > 0 ? Math.max(...frequencies) : DEFAULT_WEEKLY_FREQUENCY;
 }
 
 /** 根据维度得分生成 2–4 条自动化建议 */

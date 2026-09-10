@@ -61,7 +61,7 @@ export const SYSTEM_PROMPT = `你是一个工作流分析助手。用户会给�
 6. automationSuggestions 给 2-4 条可落地的自动化手段，必须结合该任务的具体内容，不要写空泛套话。
 7. sop 四段必须齐全且针对该任务：trigger 触发条件、inputs 输入材料、steps 执行步骤（2-5 步）、output 产出结果。
 8. reusablePrompt 是一段可直接复制给 AI 助手的中文提示词，包含该任务的具体背景、处理规则和输出要求。
-9. summary.automatableCount 必须等于 tasks 的长度；averageScore 是 tasks 中 priorityScore 的平均值，保留 1 位小数；estimatedHoursPerWeek 是估算的每周节省小时数，保留 1 位小数。
+9. summary.automatableCount 必须等于 tasks 的长度；averageScore 是 tasks 中 priorityScore 的平均值，保留 1 位小数；estimatedHoursPerWeek 是估算的每周节省小时数，保留 1 位小数。工时口径必须与本地规则引擎一致：自动化只能消除约 50% 的工时（其余用于复核、处理异常与维护规则），即 estimatedHoursPerWeek = Σ(每周发生次数 × 单次耗时小时数 × 0.5)，不要假设 100% 消除。
 10. 全部输出使用中文。若没有任何可自动化的任务，tasks 返回空数组，summary 各数值填 0。
 
 输出 JSON 时严格遵循下面的结构（字段名、层级、类型都必须一致，不要增删字段）：

@@ -2,17 +2,19 @@
  * 冒烟测试
  *
  * 直接运行：npm run smoke
- * 覆盖四层：
+ * 覆盖五层：
  *   [1]-[3] 规则引擎（ch01 既有断言，不得削弱）
  *   [4]     服务端输出校验与规范化
  *   [5]     客户端降级决策
  *   [6]     本地历史存储（含异常路径）
+ *   [7]     引擎缺陷回归（docs/design-decisions.md §12.5）
  * 任一断言失败则退出码非 0。
  */
 
 import { analyze } from "../lib/analyzer";
 import { resolveOutcome } from "../lib/api";
 import * as history from "../lib/history";
+import { detectWeeklyFrequency } from "../lib/templates";
 import { normalizeResult } from "../functions/api/validate";
 import type { AnalysisResult, AnalyzeFailureReason, TaskAnalysis } from "../lib/types";
 
@@ -243,6 +245,64 @@ function main() {
     threw = true;
   }
   check("写入失败（配额满）时不向外抛出", threw === false);
+
+  // ── [7] 引擎缺陷回归 ──
+  // 对应 docs/design-decisions.md §12.5 记录的引擎缺陷，逐条固化为断言防回归
+  console.log("\n[7] 引擎回归：§12.5 缺陷");
+
+  // 缺陷 1 & 2：「嗯」这类 1 字碎片会被跳过，但旧实现用过滤前的下标生成 id、
+  // 且把它算进了 totalSegments，导致卡片印出 TASK 02、片段总数虚高
+  const withFragment = analyze("嗯。每天手动整理销售数据并汇总。");
+  check(
+    "跳过 1 字碎片后，任务 id 仍从 task-1 起连续编号",
+    withFragment.tasks.length === 1 && withFragment.tasks[0].id === "task-1",
+    `got ${withFragment.tasks.map((t) => t.id).join(", ") || "（无任务）"}`,
+  );
+  check(
+    "totalSegments 只计可分析片段（不含 1 字碎片）",
+    withFragment.summary.totalSegments === 1,
+    `got ${withFragment.summary.totalSegments}`,
+  );
+
+  // 缺陷 3：频率映射中低于 1 次/周的词，曾被「默认 1 次/周」的初值吞掉而永不生效
+  check(
+    "命中「每月」→ 0.25 次/周",
+    detectWeeklyFrequency(["每月"]) === 0.25,
+    `got ${detectWeeklyFrequency(["每月"])}`,
+  );
+  check(
+    "命中「每季度」→ 0.08 次/周",
+    detectWeeklyFrequency(["每季度"]) === 0.08,
+    `got ${detectWeeklyFrequency(["每季度"])}`,
+  );
+  check(
+    "命中「每年」→ 0.02 次/周",
+    detectWeeklyFrequency(["每年"]) === 0.02,
+    `got ${detectWeeklyFrequency(["每年"])}`,
+  );
+  check(
+    "无频率词命中时仍默认 1 次/周",
+    detectWeeklyFrequency(["手动", "核对"]) === 1,
+    `got ${detectWeeklyFrequency(["手动", "核对"])}`,
+  );
+  check(
+    "命中多个频率词时取最高",
+    detectWeeklyFrequency(["每月", "每天"]) === 5,
+    `got ${detectWeeklyFrequency(["每月", "每天"])}`,
+  );
+
+  // 缺陷 4：每周节省工时曾假设 100% 消除，现按 AUTOMATION_COVERAGE 折算
+  const dailyHeavy = analyze("每天手动核对并汇总销售数据");
+  check(
+    "「每天 × 2 小时」按 0.5 覆盖率折算为 5 小时/周",
+    dailyHeavy.summary.estimatedHoursPerWeek === 5,
+    `got ${dailyHeavy.summary.estimatedHoursPerWeek}`,
+  );
+  check(
+    "约定示例的每周节省工时 = 6.8（含「每月」任务的 0.25 次/周）",
+    result.summary.estimatedHoursPerWeek === 6.8,
+    `got ${result.summary.estimatedHoursPerWeek}`,
+  );
 
   console.log("\n=== 结果 ===");
   if (failures === 0) {

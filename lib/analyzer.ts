@@ -32,6 +32,16 @@ const MIN_TEXT_LENGTH = 10;
 /** 可自动化阈值：priorityScore 低于此值的片段被过滤 */
 const SCORE_THRESHOLD = 25;
 
+/** 片段最小长度：标点切分后残留的 1 字碎片不算任务片段 */
+const MIN_SEGMENT_LENGTH = 2;
+
+/**
+ * 自动化覆盖率：自动化通常只能消除一部分工时（需要人复核、处理异常、
+ * 维护规则），因此估算时按此系数折算，避免给出「100% 消除」的乐观数字。
+ * 规则路径与 LLM 路径（functions/api/prompt.ts 的工时口径）必须保持一致。
+ */
+const AUTOMATION_COVERAGE = 0.5;
+
 /** 分段切分符：句号、感叹号、问号、分号、换行；逗号不切分以避免切碎 */
 const SEGMENT_SPLIT_RE = /[。！？；;!?\n]+/;
 
@@ -116,11 +126,11 @@ function singleDurationHours(timeCost: number): number {
   return 0.25;
 }
 
-/** 估算每周节省工时 = Σ(频率 × 单次耗时) */
+/** 估算每周节省工时 = Σ(频率 × 单次耗时 × 自动化覆盖率) */
 function estimateHoursPerWeek(tasks: TaskAnalysis[]): number {
   return tasks.reduce((sum, task) => {
     const freq = detectWeeklyFrequency(task.matchedKeywords);
-    return sum + freq * singleDurationHours(task.dimensions.timeCost);
+    return sum + freq * singleDurationHours(task.dimensions.timeCost) * AUTOMATION_COVERAGE;
   }, 0);
 }
 
@@ -144,8 +154,12 @@ function buildSummary(totalSegments: number, tasks: TaskAnalysis[]): AnalysisSum
   };
 }
 
-/** 分析单个片段，返回可自动化任务；未达阈值返回 null */
-function analyzeSegment(text: string, index: number): TaskAnalysis | null {
+/**
+ * 分析单个片段，返回可自动化任务；未达阈值返回 null。
+ *
+ * @param taskIndex 该任务在**已产出任务**中的序号，仅用于生成连续的任务 id
+ */
+function analyzeSegment(text: string, taskIndex: number): TaskAnalysis | null {
   const repetitionMatched = matchKeywords(text, REPETITION_KEYWORDS);
   const timeCostMatched = matchKeywords(text, TIME_COST_KEYWORDS);
   const ruleClarityMatched = matchKeywords(text, RULE_CLARITY_KEYWORDS);
@@ -172,7 +186,7 @@ function analyzeSegment(text: string, index: number): TaskAnalysis | null {
   );
 
   return {
-    id: `task-${index + 1}`,
+    id: `task-${taskIndex + 1}`,
     title: buildTitle(text),
     rawText: text,
     priorityScore,
@@ -213,16 +227,14 @@ export function analyze(text: string): AnalysisResult {
     return emptyResult();
   }
 
-  const segments = splitSegments(trimmed);
+  // 过滤掉过短片段（标点切分后可能残留 1 个字的碎片）；
+  // 只有留下来的片段才算「任务片段」，totalSegments 与它保持一致
+  const segments = splitSegments(trimmed).filter((s) => s.length >= MIN_SEGMENT_LENGTH);
 
   const tasks: TaskAnalysis[] = [];
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    // 跳过过短片段（标点切分后可能残留 1 个字的碎片）
-    if (segment.length < 2) {
-      continue;
-    }
-    const task = analyzeSegment(segment, i);
+  for (const segment of segments) {
+    // 序号用「已产出任务数」而非片段下标 —— 片段下标会因阈值过滤产生跳号
+    const task = analyzeSegment(segment, tasks.length);
     if (task) {
       tasks.push(task);
     }
