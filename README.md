@@ -73,7 +73,10 @@ npm run smoke       # smoke tests: engine, output validation, fallback, history
 npm run snapshot    # render every component to static HTML (for diffing)
 npm run typecheck   # type-checks both the app and the serverless function
 npm run build       # production build → out/
+npm run start       # serve the built out/ locally
 ```
+
+> `npm run start` serves the static `out/` directory — `next start` is not applicable here because the project uses `output: "export"`. Like `npm run dev`, it has no serverless function, so analysis falls back to the local rules engine.
 
 ## Deploying
 
@@ -90,7 +93,7 @@ Deployed as a **Cloudflare Pages** project:
 - **Structured output is enforced defensively, not guaranteed.** The model service only supports `response_format: {"type": "json_object"}`, which guarantees **valid JSON syntax but not any particular structure**. The expected shape is described in the prompt, and every response is validated and repaired server-side; anything unusable triggers the fallback rather than reaching the page.
 - **Tuned for one model.** The prompt was written for `qwen-plus`. Switching `OPENAI_MODEL` to a much weaker model will lower the JSON compliance rate and push more requests onto the fallback path.
 - **The fallback engine is still keyword-based.** When degraded, the original limitations apply: it matches keywords by substring, so it can miss tasks that are paraphrased and can flag a segment purely because it happens to contain a trigger word.
-- **Heuristic scoring.** Priority scores and the "hours saved per week" estimate are rough estimates — from the model or from the rule engine — not measurements.
+- **Heuristic scoring.** Priority scores and the "hours saved per week" estimate are rough estimates — from the model or from the rule engine — not measurements. The time-saving figure additionally assumes that automation removes **about 50%** of the work (the rest goes to reviewing results, handling exceptions and maintaining the rules); it is a stated assumption, not a measured value.
 - **History is local only.** Analysis history lives in your browser's `localStorage`. It does not sync across devices or browsers, clearing site data erases it, and it is unavailable in private/incognito windows. Only the most recent **50** entries are kept.
 - **No persistence beyond that.** No backend database, no accounts, no authentication.
 - **Single page, Chinese-only UI.** No routing, no internationalisation, no dark mode, no file upload.

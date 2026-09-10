@@ -47,7 +47,7 @@
 
 ### 4.1 三维度与权重语义
 
-- 权重类型 `KeywordWeight = 1 | 2 | 3`：**1=弱信号、2=中信号、3=强信号**。
+- 权重类型 `KeywordWeight = 2 | 3`：**2=中信号、3=强信号**。（原设计有 `1=弱信号` 一档，但从未有词使用过，2026-09-10 收窄，详见 §17。）
 - 匹配方式：**子串包含**（`text.includes(word)`），一个词命中即累计其权重。
 - 每个维度的命中词单独收集，最终 `matchedKeywords` 是三维度命中词的**去重并集**。
 
@@ -106,7 +106,9 @@ priorityScore = round(repetition × 0.35 + timeCost × 0.40 + ruleClarity × 0.2
 | 每周 / 每星期 | 1 | 每年 | 0.02 |
 | 每月 | 0.25 | 每当 / 每次 | 3 |
 
-- `detectWeeklyFrequency` 从 `matchedKeywords` 中找频率词，**命中多个时取最高频率**（更保守的工时估算），无命中默认 **1 次/周**。
+- `detectWeeklyFrequency` 从 `matchedKeywords` 中找频率词，**命中多个时取最高频率**，**无命中才**默认 **1 次/周**。
+- 2026-09-10 修掉一个让下半张表整体失效的缺陷：原实现以 `freq = 1` 起做「只升不降」的比较，导致 `每月(0.25)` / `每季度(0.08)` / `每年(0.02)` 这三个低于 1 的条目**永远抬不过初值，等于死代码**——「每月导出财务报表」被当成 1 次/周，高估 4 倍。现在默认值只在「一个频率词都没命中」时兜底，详见 §17。
+- 另注：原注释写的「取最高频率 = 更保守的估算」是**反的**。频率越高，节省工时越大，估算越**乐观**。此处保留「取最高」的实现，但不再称之为保守。
 
 ### 6.2 单次耗时分档（`singleDurationHours`）
 
@@ -120,8 +122,11 @@ priorityScore = round(repetition × 0.35 + timeCost × 0.40 + ruleClarity × 0.2
 ### 6.3 每周节省工时
 
 ```
-estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时)
+estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时 × 自动化覆盖率)
 ```
+
+- **自动化覆盖率 `AUTOMATION_COVERAGE = 0.5`**：自动化通常只能消除一部分工时（其余用于复核结果、处理异常、维护规则），故按 50% 折算。**不再假设 100% 消除**。
+- 该系数同时写进了 `functions/api/prompt.ts`（第 9 条需求），保证**规则路径与 LLM 路径的工时口径一致**——否则同一次输入换个来源就会给出差一倍的数字。
 
 ## 7. 文案模板生成（`lib/templates.ts`）
 
@@ -185,7 +190,14 @@ estimatedHoursPerWeek = Σ(每个任务的 频率 × 单次耗时)
 | 汇总各部门进度，手动核对 | 61 | 重复+耗时 |
 | 客户提交工单，判断退款/换货 | 55 | 重复+耗时+规则 |
 
-概览预期：`totalSegments = 4`、`automatableCount = 4`、`averageScore = 59.8`、`estimatedHoursPerWeek = 14`。
+概览预期：`totalSegments = 4`、`automatableCount = 4`、`averageScore = 59.8`、`estimatedHoursPerWeek = 6.8`。
+
+> 2026-09-10 更新：`estimatedHoursPerWeek` 由 `14` 改为 `6.8`，两次改动叠加所致：
+>
+> 1. 覆盖率折算：`14 × 0.5 = 7`；
+> 2. 「每月」任务的频率由被默认值吞掉的 `1` 次/周还原为 `0.25` 次/周，少算 `(1 − 0.25) × 0.5 小时 × 0.5 覆盖率 = 0.1875`；
+>
+> 结果 `7 − 0.1875 = 6.8125 → 6.8`。评分与任务数不受影响（见 §17）。
 
 > 此基准由 `npm run smoke` 断言，改动引擎实现后必须重跑验证。
 
@@ -321,7 +333,7 @@ ch01 用 `window.setTimeout(..., 320)` 模拟加载态（当时分析是同步�
 | 超长输入不耗额度 | 直接调 handler 并断言 mock 的 `AI.run` **调用次数为 0** |
 | 类型检查确实覆盖 functions/ | 放入故意报错的探针文件 → 退出码 2 且指向该文件；移除后回到 0 |
 | 页面渲染未被破坏 | T11 改动前后 snapshot 逐字节 diff 无差异 |
-| 规则引擎行为未变 | smoke 的 ch01 断言全部保留且通过；`EngineOutput` 区块仍为 4 任务 / 59.8 分 / 14 小时 |
+| 规则引擎行为未变 | smoke 的 ch01 断言全部保留且通过；`EngineOutput` 区块仍为 4 任务 / 59.8 分 / 14 小时（**该 14 小时是当时的基准**；2026-09-10 工时口径调整后为 6.8，见 §17） |
 
 ### 13.3 端到端联调的**未完成部分**（如实记录）
 
@@ -530,10 +542,65 @@ ch01 用 `window.setTimeout(..., 320)` 模拟加载态（当时分析是同步�
 
 ### 12.5 本次未做的事
 
-本次是纯可读性重构，**没有修复任何引擎缺陷**。以下问题仍然存在，留待后续处理：
+本次是纯可读性重构，**没有修复任何引擎缺陷**。当时列出的遗留问题如下——**已于 2026-09-10 全部处理，见 §17**：
 
-- 任务 id 跳号（`analyzer.ts:223` 传过滤前的下标，卡片会印出 `TASK 01 / TASK 03`）
-- `summary.totalSegments` 含被跳过的碎片（`analyzer.ts:233`），与 `automatableCount` 口径不一致
-- `estimatedHoursPerWeek` 取最高频率且假设 100% 消除，偏乐观
-- `npm run start` 在 `output: "export"` 下是死脚本
-- `KeywordWeight` 的 `1` 档位从未被任何词使用
+- [x] 任务 id 跳号（`analyzer.ts:223` 传过滤前的下标，卡片会印出 `TASK 01 / TASK 03`）
+- [x] `summary.totalSegments` 含被跳过的碎片（`analyzer.ts:233`），与 `automatableCount` 口径不一致
+- [x] `estimatedHoursPerWeek` 取最高频率且假设 100% 消除，偏乐观
+- [x] `npm run start` 在 `output: "export"` 下是死脚本
+- [x] `KeywordWeight` 的 `1` 档位从未被任何词使用
+
+> 修复时又发现一条当时未列出的缺陷（`每月/每季度/每年` 三个频率条目实为死代码），一并修掉，见 §17.1。
+
+---
+
+# 17. §12.5 引擎缺陷修复（2026-09-10）
+
+## 17.1 修了什么
+
+| # | 缺陷 | 根因 | 修法 |
+|---|------|------|------|
+| 1 | 任务 id 跳号（只印出 `TASK 02`） | `analyzeSegment(segment, i)` 传的是**片段下标** `i`，而被 `length < 2` 过滤掉的碎片已经消耗了下标 | 改传**已产出任务数** `tasks.length`；`analyzeSegment` 的参数名同步改为 `taskIndex` |
+| 2 | `totalSegments` 含被跳过的 1 字碎片 | `buildSummary(segments.length, …)` 传的是**过滤前**的数组长度 | 把 `length >= 2` 的过滤提前到 `analyze()` 里，`segments` 从此就是「可分析片段」，两处口径合一；魔法数字 `2` 抽成常量 `MIN_SEGMENT_LENGTH` |
+| 3 | **每月 / 每季度 / 每年 的频率条目永不生效**（§12.5 未列出，本次新发现） | `detectWeeklyFrequency` 以 `freq = 1` 起做「只升不降」比较，低于 1 的条目抬不过初值 | 默认值改为只在「一个频率词都没命中」时兜底（`DEFAULT_WEEKLY_FREQUENCY`），命中则取命中项的最大值 |
+| 4 | 每周节省工时偏乐观（假设 100% 消除） | `Σ(频率 × 单次耗时)` 无折扣 | 引入 `AUTOMATION_COVERAGE = 0.5`，公式改为 `Σ(频率 × 单次耗时 × 覆盖率)`；**同步改 `functions/api/prompt.ts` 第 9 条**，否则两条路径口径不一致 |
+| 5 | `npm run start` 是死脚本 | `output: "export"` 下 `next start` 直接报错退出 | 改为 Next 报错信息里自己推荐的 `npx serve@latest out` |
+| 6 | `KeywordWeight` 的 `1` 档从未使用 | 死档位 | 类型收窄为 `2 \| 3`，并在注释里写明「需要弱信号词时先加回类型再补词」 |
+
+> 缺陷 3 是这次**修 4 时顺手测出来的**：`docs` §6.1 一直把 `每月 → 0.25` 当作生效值，代码里却永远返回 1——**文档与实现互相矛盾**，而单看代码不会觉得有问题（`FREQUENCY_MAP` 里明明写了）。这也是「不要只按 §12.5 的字面清单改」的一个例子。
+
+## 17.2 验证方式与证据
+
+**测试先行**：先在 `scripts/smoke.ts` 新增 `[7] 引擎回归：§12.5 缺陷` 共 9 条断言，运行确认**全部按预期失败**（RED）：
+
+```
+❌ 跳过 1 字碎片后，任务 id 仍从 task-1 起连续编号 — got task-2
+❌ totalSegments 只计可分析片段（不含 1 字碎片） — got 2
+❌ 命中「每月」→ 0.25 次/周 — got 1
+❌ 命中「每季度」→ 0.08 次/周 — got 1
+❌ 命中「每年」→ 0.02 次/周 — got 1
+❌ 「每天 × 2 小时」按 0.5 覆盖率折算为 5 小时/周 — got 10
+❌ 约定示例的每周节省工时 = 6.8（含「每月」任务的 0.25 次/周） — got 14
+```
+
+改完实现后全绿。另有 2 条**边界断言从一开始就通过**（「无频率词命中时仍默认 1 次/周」「命中多个频率词时取最高」），特意保留，用来约束新实现不能把既有行为改坏。
+
+| 项 | 证据 |
+|---|---|
+| 全量断言 | `npm run smoke` → 70 条全通过（原 61 条**一条未削弱**，新增 9 条） |
+| 类型收窄未破坏词典 | `npm run typecheck` → 退出码 0（app 与 functions 双侧） |
+| 产物可构建 | `npm run build` → 退出码 0，4 个静态页正常生成 |
+| 渲染未被误伤 | 用 `git archive HEAD` 建基线副本分别渲染快照并逐字节 diff：**17 个区块中仅 2 处变化**——`ResultSummary` 的 `14 小时` → `6.8 小时`、`EngineOutput` 的 `"estimatedHoursPerWeek": 14` → `6.8`。**`TASK 0X` 标签一个都没变**，反证 id 修复没有改动约定示例的渲染 |
+| `npm run start` 真的能跑 | 后台起 `serve` 后 curl：`status=200`、`<title>FlowLens · AI 工作流分析</title>`、8774 字节（与线上部署同尺寸） |
+
+**基准变更**：约定示例概览由 `4 / 59.8 / 14` 变为 **`4 / 59.8 / 6.8`**。任务数、各任务优先级分、平均分**全部未变**。
+
+## 17.3 本次未动的地方（如实记录）
+
+- **任务 id 在排序后与显示顺序不一致。** id 按片段序号生成，而 `tasks` 之后会按优先级降序排序，所以约定示例的卡片顺序是 `TASK 04 / 01 / 02 / 03`（**这是本次改动之前就存在的行为**，本次只消除了「跳号」，没有引入新问题）。LLM 路径（`functions/api/validate.ts`）则是**排序后**重编号 `task-{n}`，两条路径在这里并不一致。若要统一，应让规则路径也改为排序后编号——那会动到 §3「id 用片段序号、不用排序后序号」的既有约定，故本次不改，留待决定。
+- **`estimatedHoursPerWeek` 仍是启发式估算**，0.5 这个系数是一个明示的假设，不是实测值。
+
+## 17.4 本轮踩到的两个操作坑
+
+1. **后台进程按 PID 杀要杀整棵树，`serve` 也一样。** `npx serve@latest out` 用 `&` 后台启动后，`taskkill //F //T //PID <bash的PID>` 并没有停掉真正在监听的进程，`netstat` 仍见 3941 处于 LISTENING。改用 **listening 的那个 PID** 再 `taskkill //F //T` 才清理干净。（与 §16 的 wrangler 残留同源：**判断残留看 `netstat`，不看启动命令返回没返回**。）
+2. **在仓库根目录跑子目录里的 tsx 脚本会炸。** 为做快照对比，我把 HEAD 的副本放在 `.snapshot-baseline/` 后从仓库根执行 `npx tsx .snapshot-baseline/scripts/render-snapshot.tsx`，报 `ReferenceError: React is not defined`；**`cd` 进该子目录再执行就正常**。tsx 解析 `tsconfig.json`（`jsx: "preserve"`）是按 cwd 而非脚本所在目录，隔着目录跑会退化成经典 JSX 转换。以后做这种「基线副本对比」记得先 `cd` 进去。
