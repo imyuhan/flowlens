@@ -18,6 +18,8 @@ For each automatable task, FlowLens outputs:
 - **SOP** (trigger / inputs / steps / output)
 - **Reusable prompt** you can copy into an AI assistant
 
+![FlowLens home screen: a textarea for describing your work, a "Load example" link, and an "Analyze" button](docs/screenshots/home.png)
+
 ## How it works
 
 1. Enter a short description of your daily work (or click **填入示例** / "Load example").
